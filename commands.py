@@ -34,7 +34,7 @@ MODE_ALIASES = {
 }
 
 MODEL_ALIASES = {
-    "opus": "claude-opus-4-6",
+    "opus": "claude-opus-4-8[1m]",
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5-20251001",
 }
@@ -212,49 +212,119 @@ async def _format_session_list(user_id: str, chat_id: str, store: SessionStore):
     return "\n".join(lines)
 
 
-def _list_skills(chat_id: str = ""):
-    """扫描 ~/.claude/plugins + ~/.claude/skills 目录，返回 dict(text, buttons) 或 str"""
-    skills = []
-    # 扫描 plugins (旧格式)
+# skill 分组：(key, 显示名)，顺序即展示顺序
+SKILL_GROUPS = [
+    ("lark", "🐦 飞书 Lark"),
+    ("super", "⚡ Superpowers"),
+    ("ui", "🎨 UI 设计"),
+    ("research", "🔎 研究内容"),
+    ("dev", "🛠 开发命令"),
+    ("other", "📦 其他"),
+]
+
+
+def _skill_group(name: str, source: str) -> str:
+    """按名称/来源把 skill 归到某个分组。"""
+    if name.startswith("lark-"):
+        return "lark"
+    if "superpowers" in source:
+        return "super"
+    if "ui-ux" in source or name == "frontend-design":
+        return "ui"
+    if name in {"deep-research", "last30days", "agent-reach", "follow-builders"}:
+        return "research"
+    if source == "cmd":
+        return "dev"
+    return "other"
+
+
+def _collect_skills():
+    """扫描所有来源，返回去重并带分组的 [(name, desc, group)]，按名排序。"""
+    skills = []  # (name, desc, source)
+
+    # 旧格式命令：plugins/.../commands/*.md
     if os.path.isdir(PLUGINS_DIR):
         for root, dirs, files in os.walk(PLUGINS_DIR):
             if os.path.basename(root) != "commands":
                 continue
             for fname in files:
-                if not fname.endswith(".md"):
-                    continue
-                name = fname[:-3]
-                fpath = os.path.join(root, fname)
-                desc = _read_skill_desc(fpath)
-                skills.append((name, desc))
+                if fname.endswith(".md"):
+                    skills.append((fname[:-3], _read_skill_desc(os.path.join(root, fname)), "cmd"))
 
-    # 扫描 skills (新格式)
+    # ~/.claude/skills/<name>/SKILL.md
     skills_dir = os.path.expanduser("~/.claude/skills")
     if os.path.isdir(skills_dir):
         for entry in os.listdir(skills_dir):
-            skill_md = os.path.join(skills_dir, entry, "SKILL.md")
-            if os.path.isfile(skill_md):
-                desc = _read_skill_desc(skill_md)
-                skills.append((entry, desc))
+            md = os.path.join(skills_dir, entry, "SKILL.md")
+            if os.path.isfile(md):
+                skills.append((entry, _read_skill_desc(md), "user"))
 
-    if not skills:
-        return "暂无已安装的 skills。"
+    # 已安装插件：<installPath>/skills/<name>/SKILL.md，source=插件key
+    installed = os.path.expanduser("~/.claude/plugins/installed_plugins.json")
+    if os.path.isfile(installed):
+        try:
+            with open(installed, encoding="utf-8") as f:
+                data = json.load(f)
+            for key, insts in data.get("plugins", {}).items():
+                for inst in insts:
+                    sk_dir = os.path.join(inst.get("installPath", ""), "skills")
+                    if not os.path.isdir(sk_dir):
+                        continue
+                    for entry in os.listdir(sk_dir):
+                        md = os.path.join(sk_dir, entry, "SKILL.md")
+                        if os.path.isfile(md):
+                            skills.append((entry, _read_skill_desc(md), key))
+        except (OSError, ValueError):
+            pass
 
     skills.sort(key=lambda x: x[0])
-    # 去重
     seen = set()
     unique = []
-    for name, desc in skills:
-        if name not in seen:
-            seen.add(name)
-            unique.append((name, desc))
+    for name, desc, source in skills:
+        if name in seen:
+            continue
+        seen.add(name)
+        unique.append((name, desc, _skill_group(name, source)))
+    return unique
 
+
+def _list_skills(chat_id: str = "", group: str = ""):
+    """二级菜单：无 group → 分组按钮；有 group → 该组 skill 快捷按钮。"""
+    unique = _collect_skills()
+    if not unique:
+        return "暂无已安装的 skills。"
+
+    group = (group or "").strip().lower()
+
+    # 一级：展示分组
+    if not group:
+        counts = {}
+        for _, _, g in unique:
+            counts[g] = counts.get(g, 0) + 1
+        buttons = [
+            {"text": f"{label} ({counts[key]})",
+             "value": {"action": "run_cmd", "cmd": f"/skills {key}", "cid": chat_id}}
+            for key, label in SKILL_GROUPS if counts.get(key)
+        ]
+        return {
+            "text": f"🛠 **可用 Skills** 共 {len(unique)} 个，选择分组查看：",
+            "buttons": buttons,
+        }
+
+    # 二级：某组下的 skill
+    label = dict(SKILL_GROUPS).get(group, group)
+    members = [(n, d) for n, d, g in unique if g == group]
+    if not members:
+        return f"❌ 未知分组：`{group}`。发送 `/skills` 查看分组。"
+
+    listed = "  ".join(f"`{n}`" for n, _ in members)
     buttons = [
-        {"text": f"/{name}", "value": {"action": "reply", "reply": f"/{name}", "cid": chat_id}}
-        for name, desc in unique[:15]
+        {"text": f"/{n}", "value": {"action": "reply", "reply": f"/{n}", "cid": chat_id}}
+        for n, _ in members[:28]
     ]
+    buttons.append({"text": "⬅️ 返回分组", "value": {"action": "run_cmd", "cmd": "/skills", "cid": chat_id}})
     return {
-        "text": f"🛠 **可用 Skills** ({len(unique)} 个)",
+        "text": f"**{label}** · {len(members)} 个\n\n{listed}\n\n点按钮或直接输入 `/名称` 使用。",
         "buttons": buttons,
     }
 
@@ -679,7 +749,7 @@ async def handle_command(
         return await _handle_workspace_command(args, user_id, chat_id, store)
 
     elif cmd == "skills":
-        return _list_skills(chat_id)
+        return _list_skills(chat_id, args)
 
     elif cmd == "mcp":
         return _list_mcp()
