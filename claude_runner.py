@@ -196,10 +196,12 @@ async def run_claude(
     final_text, new_session_id, returncode, stderr_text = await _run_once(session_id)
     used_fresh_session_fallback = False
 
-    # Claude 的 session 与 cwd 不兼容时，CLI 有时直接 code=1 且 stderr 为空。
-    # 这种场景自动退回新 session，避免用户必须手动 /new。
-    if session_id and returncode != 0 and not stderr_text and not final_text:
-        print("[run_claude] resume failed without stderr, retrying with fresh session", flush=True)
+    # Claude 的 session 与 cwd 不兼容时（如 /cd 切换目录后旧 session 不在新目录），
+    # CLI 会 code=1，有时 stderr 为空，有时明确报 "No conversation found"。
+    # 这两种场景都自动退回新 session，避免用户必须手动 /new。
+    resume_lost = "No conversation found" in stderr_text
+    if session_id and returncode != 0 and not final_text and (not stderr_text or resume_lost):
+        print("[run_claude] resume failed, retrying with fresh session", flush=True)
         final_text, new_session_id, returncode, stderr_text = await _run_once(None)
         used_fresh_session_fallback = True
 

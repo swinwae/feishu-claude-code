@@ -13,7 +13,7 @@ DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "claude-opus-4-6")
 DEFAULT_CWD = os.path.expanduser(os.getenv("DEFAULT_CWD", "~"))
 PERMISSION_MODE = os.getenv("PERMISSION_MODE", "bypassPermissions")
 
-SESSIONS_DIR = os.path.expanduser("~/.feishu-claude")
+SESSIONS_DIR = os.path.expanduser(os.getenv("SESSIONS_DIR", "~/.feishu-claude"))
 
 # 卡片按钮回调 HTTP 端口（需 ngrok 暴露）
 CALLBACK_PORT = int(os.getenv("CALLBACK_PORT", "9981"))
