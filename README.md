@@ -280,6 +280,52 @@ Quick start: clone, `pip install -r requirements.txt`, configure `.env` with Fei
 
 See Chinese sections above for detailed setup instructions.
 
+## 运维控制台（Ops Console）
+
+一个**仅本机访问**的 web 控制台，把三 bot 部署的日常运维从终端搬到浏览器：看健康、看实时日志、看会话、看配置，并以网页流程执行金丝雀发布。
+
+**用途与安全边界**
+
+- 独立 FastAPI 服务，绑定 `127.0.0.1:9990`，**无鉴权、仅本机可访问**。
+- **唯一写操作 = 发布**（`rollout.sh` / `promote.sh`）；健康、日志、会话、配置四块**全部只读**。
+- 任何含 `SECRET`/`TOKEN`/`PASSWORD` 的值与用户 open_id 一律**打码**，不回传明文。
+
+**五个面板**
+
+1. **健康** — bot1/2/3 存活/PID/当前 git 版本/`bot3-last-good`/启动时间，每 5s 自动刷新。
+2. **日志** — 三 bot 的 `/tmp/feishu-claude*.log` 实时 tail，可切换。
+3. **会话** — 各 bot 当前会话的模型/权限模式/cwd/session（open_id 已打码）。
+4. **配置** — 三 bot 启动配置并排对比（secret 已打码）。
+5. **发布** — 【金丝雀发布】跑 rollout 并实时滚动日志；通过后解锁【升级 bot3】跑 promote。
+
+**依赖**
+
+控制台需要 `fastapi` 与 `uvicorn`（bot 本身不依赖）。按发布纪律，依赖需手动安装、不进 `promote` 同步：
+
+```bash
+.venv/bin/pip install fastapi uvicorn
+```
+
+**启动方式**
+
+- 手动（前台调试）：
+
+  ```bash
+  cd /Users/wanlizhu/projects/feishu-claude-code
+  .venv/bin/python -m uvicorn console.server:app --host 127.0.0.1 --port 9990
+  ```
+
+- 开机自启（launchd）：
+
+  ```bash
+  cp deploy/com.feishu-claude.console.plist ~/Library/LaunchAgents/
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.feishu-claude.console.plist
+  ```
+
+  自启日志写入 `/tmp/feishu-claude-console.log`。
+
+启动后浏览器访问 **http://127.0.0.1:9990**。
+
 ## License
 
 [MIT](LICENSE)
