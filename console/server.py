@@ -53,15 +53,53 @@ async def api_logs(bot: str = "bot1"):
     return _sse(tail_log(b.log))
 
 
+class _LockGuardedStream:
+    """包裹一个异步生成器，保证发布锁在恰好一次的时机被释放。
+
+    不能简单依赖 “async generator 内部 try/finally” 来释放锁：
+    若生成器从未被迭代过就被 aclose()（例如调用方拿到响应后从不消费流），
+    Python 不会运行尚未启动的 async generator 的 finally 块，锁会被永久泄漏。
+    这里改用显式包装的异步迭代器，在 __anext__ 的正常结束/异常路径，
+    以及 aclose() 路径上都主动释放一次，从而保证“已 acquire 但流未消费”
+    的场景也能正确释放锁。
+    """
+
+    def __init__(self, agen):
+        self._agen = agen
+        self._released = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return await self._agen.__anext__()
+        except StopAsyncIteration:
+            self._release_once()
+            raise
+        except BaseException:
+            self._release_once()
+            raise
+
+    async def aclose(self):
+        await self._agen.aclose()
+        self._release_once()
+
+    def _release_once(self):
+        if not self._released:
+            self._released = True
+            publish_lock.release()
+
+
 async def _run_publish(cmd):
     if publish_lock.locked():
         return JSONResponse({"ok": False, "error": "已有发布任务在执行"}, status_code=409)
-
-    async def guarded():
-        async with publish_lock:
-            async for line in stream_script(cmd):
-                yield line
-    return _sse(guarded())
+    # 关键修复：检测与获取之间不能有 await 挂起点。
+    # locked() 是同步调用，锁空闲时 acquire() 不会挂起，
+    # 二者之间没有切换点，因此在单线程事件循环里这一段是原子的，
+    # 从而消除“两个请求都看到 locked()==False 然后都拿到 200”的 TOCTOU 竞态。
+    await publish_lock.acquire()
+    return _sse(_LockGuardedStream(stream_script(cmd)))
 
 
 @app.post("/api/rollout")
