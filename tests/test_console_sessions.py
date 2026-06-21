@@ -50,3 +50,10 @@ def test_read_bot_sessions_reads_file(tmp_path):
     bot = Bot("bot1", "l", "/r", "/log", str(tmp_path), "env", "/e")
     rows = read_bot_sessions(bot)
     assert rows[0]["user"] == "ou_****e889"
+
+
+def test_read_bot_sessions_handles_non_dict_json(tmp_path):
+    """sessions.json 是有效 JSON 但顶层不是 dict（如 list）时，应返回 [] 而非抛异常"""
+    (tmp_path / "sessions.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    bot = Bot("bot1", "l", "/r", "/log", str(tmp_path), "env", "/e")
+    assert read_bot_sessions(bot) == []

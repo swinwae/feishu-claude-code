@@ -38,4 +38,7 @@ def read_bot_sessions(bot: Bot) -> list[dict]:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return []
+    # 若 JSON 有效但顶层不是 dict，也返回空列表
+    if not isinstance(data, dict):
+        return []
     return extract_sessions(data)
