@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运维控制台</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0; background: #f5f5f7; color: #1d1d1f; }
+  header { background: #1d1d1f; color: #fff; padding: 12px 20px; font-size: 18px; }
+  nav { display: flex; gap: 4px; padding: 8px 20px; background: #fff; border-bottom: 1px solid #ddd; }
+  nav button { border: 0; background: #eee; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
+  nav button.active { background: #0071e3; color: #fff; }
+  main { padding: 20px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .dot.on { background: #34c759; } .dot.off { background: #ff3b30; }
+  pre { background: #111; color: #ddd; padding: 12px; border-radius: 8px; height: 60vh; overflow: auto; white-space: pre-wrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; }
+  .cols { display: flex; gap: 12px; } .cols .card { flex: 1; }
+  button.act { background: #0071e3; color: #fff; border: 0; padding: 10px 18px; border-radius: 8px; cursor: pointer; }
+  button.act:disabled { background: #999; cursor: not-allowed; }
+  input { padding: 8px; border: 1px solid #ccc; border-radius: 6px; width: 60%; }
+</style>
+</head>
+<body>
+<header>🛠 运维控制台</header>
+<nav>
+  <button data-tab="health" class="active">健康</button>
+  <button data-tab="logs">日志</button>
+  <button data-tab="sessions">会话</button>
+  <button data-tab="config">配置</button>
+  <button data-tab="publish">发布</button>
+</nav>
+<main>
+  <section id="health" class="panel active"></section>
+  <section id="logs" class="panel">
+    <div id="logTabs"></div>
+    <pre id="logBox"></pre>
+  </section>
+  <section id="sessions" class="panel"></section>
+  <section id="config" class="panel"></section>
+  <section id="publish" class="panel">
+    <div class="card">
+      <button class="act" id="btnRollout">金丝雀发布（rollout）</button>
+      <span id="rolloutHint"></span>
+    </div>
+    <div class="card">
+      <input id="promoteMsg" placeholder="改动说明，如 feat: 新增 xxx" disabled>
+      <button class="act" id="btnPromote" disabled>升级 bot3（promote）</button>
+    </div>
+    <pre id="pubBox"></pre>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
+  b.classList.add('active'); $('#' + b.dataset.tab).classList.add('active');
+  if (b.dataset.tab === 'sessions') loadSessions();
+  if (b.dataset.tab === 'config') loadConfig();
+});
+
+// 健康
+async function loadHealth() {
+  const r = await fetch('/api/health'); const d = await r.json();
+  $('#health').innerHTML = d.bots.map(b => `
+    <div class="card">
+      <b><span class="dot ${b.alive ? 'on' : 'off'}"></span>${b.name}</b>（${b.label}）
+      <div>PID: ${b.pid || '—'} ｜ 版本: ${b.version || '—'}${b.dirty ? ' ⚠️未提交改动' : ''}</div>
+      <div>last-good: ${b.last_good || '—'} ｜ 启动: ${b.started || '—'}</div>
+    </div>`).join('');
+}
+setInterval(() => { if ($('#health').classList.contains('active')) loadHealth(); }, 5000);
+loadHealth();
+
+// 日志
+let logES = null;
+function openLog(bot) {
+  if (logES) logES.close();
+  $('#logBox').textContent = '';
+  logES = new EventSource('/api/logs/stream?bot=' + bot);
+  logES.onmessage = e => { const p = $('#logBox'); p.textContent += e.data + '\n'; p.scrollTop = p.scrollHeight; };
+}
+$('#logTabs').innerHTML = ['bot1','bot2','bot3'].map(b => `<button onclick="openLog('${b}')">${b}</button>`).join(' ');
+openLog('bot1');
+
+// 会话
+async function loadSessions() {
+  const d = (await (await fetch('/api/sessions')).json()).sessions;
+  $('#sessions').innerHTML = Object.entries(d).map(([bot, rows]) => `
+    <div class="card"><b>${bot}</b>${rows.length ? `
+      <table><tr><th>用户</th><th>chat</th><th>模型</th><th>模式</th><th>cwd</th><th>session</th><th>开始</th></tr>
+      ${rows.map(r => `<tr><td>${r.user}</td><td>${r.chat}</td><td>${r.model}</td><td>${r.permission_mode}</td><td>${r.cwd}</td><td>${(r.session_id||'').slice(0,8)}</td><td>${r.started_at}</td></tr>`).join('')}
+      </table>` : '<div>无会话</div>'}</div>`).join('');
+}
+
+// 配置
+async function loadConfig() {
+  const d = (await (await fetch('/api/config')).json()).configs;
+  $('#config').innerHTML = '<div class="cols">' + Object.entries(d).map(([bot, cfg]) => `
+    <div class="card"><b>${bot}</b>
+    ${Object.entries(cfg).map(([k,v]) => `<div><code>${k}</code> = ${v}</div>`).join('')}
+    </div>`).join('') + '</div>';
+}
+
+// 发布
+function streamPost(url, body, onDone) {
+  $('#pubBox').textContent = '';
+  fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : null})
+    .then(async resp => {
+      if (resp.status === 409) { $('#pubBox').textContent = '已有发布任务在执行，请稍候。'; return; }
+      if (resp.status === 400) { $('#pubBox').textContent = '改动说明不能为空。'; return; }
+      const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
+      while (true) {
+        const {value, done} = await reader.read(); if (done) break;
+        buf += dec.decode(value, {stream:true});
+        const parts = buf.split('\n\n'); buf = parts.pop();
+        for (const p of parts) if (p.startsWith('data: ')) {
+          $('#pubBox').textContent += p.slice(6) + '\n'; $('#pubBox').scrollTop = $('#pubBox').scrollHeight;
+        }
+      }
+      onDone && onDone($('#pubBox').textContent);
+    });
+}
+$('#btnRollout').onclick = () => streamPost('/api/rollout', null, txt => {
+  if (txt.includes('金丝雀 bot1/bot2 已加载新代码')) {
+    $('#promoteMsg').disabled = false; $('#btnPromote').disabled = false;
+    $('#rolloutHint').textContent = ' ✅ 金丝雀通过，去飞书实测后再升级 bot3';
+  } else {
+    $('#rolloutHint').textContent = ' ❌ 未通过（见日志），已自动回滚';
+  }
+});
+$('#btnPromote').onclick = () => streamPost('/api/promote', {message: $('#promoteMsg').value});
+</script>
+</body>
+</html>
